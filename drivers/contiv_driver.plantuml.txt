@@ -1,0 +1,159 @@
+netplugin -> vppdriver : Init()
+   activate vppdriver
+   vppdriver -> vppdriver : govpp connect
+   vppdriver -> vppdriver : resync
+   netplugin <-- vppdriver : Init()
+deactivate vppdriver
+
+netplugin -> vppdriver : CreateNetwork(id)
+   activate vppdriver
+   alt L2
+      vppdriver -> l2plugin : put BD (Bridge Domain)
+      vppdriver -> ifplugin : put loop back
+      vppdriver -> aclplugin : put ACL for loopback
+      vppdriver -> l2plugin : put loop back into BD
+   else L3
+      vppdriver -> l3plugin : put VRF
+      vppdriver -> ifplugin : put loop back
+      vppdriver -> aclplugin : put ACL for loopback
+      vppdriver -> l3plugin : put loop back into VRF
+   end
+   netplugin <-- vppdriver : CreateNetwork
+deactivate vppdriver
+
+netplugin -> vppdriver : CreateEndpoint(id)
+   activate vppdriver
+   vppdriver -> ifplugin : put VETH+AFPacket or MEMIF
+   alt L2
+      vppdriver -> l2plugin : put into BD the VETH+AFPacket/MEMIF
+   else L3
+      vppdriver -> l3plugin : put into VRF the VETH+AFPacket/MEMIF
+   end
+   netplugin <-- vppdriver : CreateEndpoint
+deactivate vppdriver
+
+netplugin -> vppdriver : AddPolicyRule(id)
+   activate vppdriver
+   vppdriver -> vppdriver : put ACL rule for ACL
+   netplugin <-- vppdriver : AddPolicyRule
+deactivate vppdriver
+
+netplugin -> vppdriver : CreateEndpointGroup(id)
+   activate vppdriver
+   vppdriver -> ifplugin : put VETH+AFPacket or MEMIF
+   alt L2
+      vppdriver -> LB : ???
+   else L3
+      vppdriver -> LB : ??? ipv4-load-balance
+   end
+   netplugin <-- vppdriver : CreateEndpointGroup
+deactivate vppdriver
+
+netplugin -> vppdriver : CreateRemoteEndpoint(id)
+   activate vppdriver
+   vppdriver -> vppdriver : DO NOTHING TBD
+   netplugin <-- vppdriver : CreateRemoteEndpoint
+deactivate vppdriver
+
+netplugin -> vppdriver : AddPeerHost(id)
+   activate vppdriver
+   alt L2
+      vppdriver -> l2plugin : put VXLAN for peer HOST (TBD VTEP)
+      vppdriver -> l2plugin : put VXLAN in BD for peer HOST
+   end
+   netplugin <-- vppdriver : AddPeerHost
+deactivate vppdriver
+
+netplugin -> vppdriver : AddMaster(id)
+   activate vppdriver
+   vppdriver -> vppdriver : ??? TBD
+   netplugin <-- vppdriver : AddMaster
+deactivate vppdriver
+
+netplugin -> vppdriver : AddBgp(id)
+   activate vppdriver
+   alt L3
+      vppdriver -> BGP : connect (cfg.Hostname, cfg.RouterIP, cfg.As, cfg.NeighborAs, cfg.Neighbor)
+   end
+   netplugin <-- vppdriver : AddBgp
+deactivate vppdriver
+
+netplugin -> vppdriver : AddSvcSpec(svcName, IPAddress, ports, ExternalIPs)
+   activate vppdriver
+   alt L3
+      vppdriver -> vppdriver : installSvcRules(NAT Rules...)
+      vppdriver -> LB : TBD AddLbService(nameserver.K8sDefaultTenant, svcName, spec.IPAddress)
+   end
+   netplugin <-- vppdriver : AddSvcSpec
+deactivate vppdriver
+
+netplugin -> vppdriver : SvcProviderUpdate(svcName string, providers)
+   activate vppdriver
+   vppdriver -> router : TBD connectivity to service behind router???
+   netplugin <-- vppdriver : SvcProviderUpdate
+deactivate vppdriver
+
+netplugin -> vppdriver : GetEndpointStats()
+   activate vppdriver
+   alt L2
+      vppdriver -> ifplugin : return VXLAN packet+bytes counters
+   else L3
+      vppdriver -> ifplugin : return VLAN packet+bytes counters
+   end
+   netplugin <-- vppdriver : GetEndpointStats
+deactivate vppdriver
+
+netplugin -> vppdriver : InspectState()
+   vppdriver -> statuscheck : TBD generate report from status check cache
+   netplugin <-- vppdriver : InspectState
+deactivate vppdriver
+
+netplugin -> vppdriver : InspectBgp()
+   alt L3
+      vppdriver -> statuscheck : TBD generate BGP report from status check cache
+   end
+   netplugin <-- vppdriver : InspectBgp
+deactivate vppdriver
+
+netplugin -> vppdriver : GlobalConfigUpdate(ARP Flood/Proxy)
+   alt L2
+      vppdriver -> l2plugin : put BD
+   end
+   netplugin <-- vppdriver : InspectState
+deactivate vppdriver
+
+netplugin -> vppdriver : InspectNameserver()
+   vppdriver -> statuscheck : TBD generate DNS report from status check cache
+   netplugin <-- vppdriver : InspectNameserver
+deactivate vppdriver
+
+netplugin -> vppdriver : DelPolicyRule(id)
+   activate vppdriver
+   vppdriver -> vppdriver : del ACL
+   netplugin <-- vppdriver : DelPolicyRule(id)
+deactivate vppdriver
+
+netplugin -> vppdriver : DeleteEndpoint(id)
+   activate vppdriver
+   vppdriver -> ifplugin : del VETH+AFPacket or MEMIF
+   alt L2
+      vppdriver -> l2plugin : del from BD the VETH+AFPacket/MEMIF
+   else L3
+      vppdriver -> l3plugin : del from VRF the VETH+AFPacket/MEMIF
+   end
+   netplugin <-- vppdriver : DeleteEndpoint(id)
+deactivate vppdriver
+
+netplugin -> vppdriver : DeleteNetwork(id)
+   activate vppdriver
+   alt L2
+      vppdriver -> vppdriver : del BD (Bridge Domain)
+   end
+   netplugin <-- vppdriver : DeleteNetwork(id)
+deactivate vppdriver
+
+netplugin -> vppdriver : Deinit()
+   activate vppdriver
+   vppdriver -> vppdriver : govpp disconnect
+   netplugin <-- vppdriver : Deinit()
+deactivate vppdriver
