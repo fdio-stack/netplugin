@@ -69,13 +69,9 @@ type VppDriverOperState struct {
 	// Acquire locks in the order as they are listed here to prevent from a potential deadlock!
 	LocalNetConfig      map[string]NetworkConfig // Network ID -> Network config
 	localNetConfigMutex sync.Mutex
-<<<<<<< HEAD
-	LocalACLConfig      map[string]ACLConfig // Network ID -> ACL config
-=======
 	LocalEpConfig       map[string]EndpointConfig // Endpoint ID -> Endpoint config
 	localEpConfigMutex  sync.Mutex
 	LocalACLConfig      map[string]ACLConfig // ACL ID -> ACL config
->>>>>>> upstream/govpp-pantheon-dev2
 	localACLConfigMutex sync.Mutex
 }
 
@@ -617,33 +613,16 @@ func (d *VppDriver) AddPolicyRule(id string) error {
 	}
 
 	d.oper.localACLConfigMutex.Lock()
-<<<<<<< HEAD
-	_, exists := d.oper.LocalACLConfig[id]
-	d.oper.localACLConfigMutex.Unlock()
-	if exists {
-		err = fmt.Errorf("Network id='%s' is already configured", id)
-=======
 	defer d.oper.localACLConfigMutex.Unlock()
 	_, exists := d.oper.LocalACLConfig[id]
 	if exists {
 		err = fmt.Errorf("ACL id='%s' is already configured", id)
->>>>>>> upstream/govpp-pantheon-dev2
 		log.Error(err.Error())
 		return err
 	}
 
 	vppRule := &ruleCfg.OfnetPolicyRule
 	aclcfg := ACLConfig{}
-<<<<<<< HEAD
-
-	// Action rule to be VPP specific
-	if vppRule.Action == "allow" {
-		aclcfg.acl = &vpp_acl.AccessLists_Acl{
-			Rules: []*vpp_acl.AccessLists_Acl_Rule{
-				{
-					Actions: &vpp_acl.AccessLists_Acl_Rule_Actions{
-						AclAction: vpp_acl.AclAction_PERMIT,
-=======
 	var action *vpp_acl.AccessLists_Acl_Rule_Actions
 	var matches *vpp_acl.AccessLists_Acl_Rule_Matches
 
@@ -674,19 +653,10 @@ func (d *VppDriver) AddPolicyRule(id string) error {
 					SourcePortRange: &vpp_acl.AccessLists_Acl_Rule_Matches_IpRule_Tcp_SourcePortRange{
 						LowerPort: uint32(vppRule.SrcPort),
 						UpperPort: uint32(vppRule.SrcPort),
->>>>>>> upstream/govpp-pantheon-dev2
 					},
 				},
 			},
 		}
-<<<<<<< HEAD
-	} else if vppRule.Action == "deny" {
-		aclcfg.acl = &vpp_acl.AccessLists_Acl{
-			Rules: []*vpp_acl.AccessLists_Acl_Rule{
-				{
-					Actions: &vpp_acl.AccessLists_Acl_Rule_Actions{
-						AclAction: vpp_acl.AclAction_DENY,
-=======
 	} else if vppRule.IpProtocol == 17 {
 		matches = &vpp_acl.AccessLists_Acl_Rule_Matches{
 			IpRule: &vpp_acl.AccessLists_Acl_Rule_Matches_IpRule{
@@ -702,82 +672,10 @@ func (d *VppDriver) AddPolicyRule(id string) error {
 					SourcePortRange: &vpp_acl.AccessLists_Acl_Rule_Matches_IpRule_Udp_SourcePortRange{
 						LowerPort: uint32(vppRule.SrcPort),
 						UpperPort: uint32(vppRule.SrcPort),
->>>>>>> upstream/govpp-pantheon-dev2
 					},
 				},
 			},
 		}
-<<<<<<< HEAD
-	}
-
-	// // Src/DstNetwork choice based on protocol
-	// if vppRule.IpProtocol == 6 {
-	// 	aclcfg.acl = &vpp_acl.AccessLists_Acl{
-	// 		Rules: []*vpp_acl.AccessLists_Acl_Rule{
-	// 			{
-	// 				Matches: &vpp_acl.AccessLists_Acl_Rule_Matches{
-	// 					IpRule: &vpp_acl.AccessLists_Acl_Rule_Matches_IpRule{
-	// 						Ip: &vpp_acl.AccessLists_Acl_Rule_Matches_IpRule_Ip{
-	// 							DestinationNetwork: vppRule.DstIpAddr,
-	// 							SourceNetwork:      vppRule.SrcIpAddr,
-	// 						},
-	// 						Tcp: &vpp_acl.AccessLists_Acl_Rule_Matches_IpRule_Tcp{
-	// 							DestinationPortRange: &vpp_acl.AccessLists_Acl_Rule_Matches_IpRule_Tcp_DestinationPortRange{
-	// 								LowerPort: uint32(vppRule.DstPort),
-	// 								UpperPort: uint32(vppRule.DstPort),
-	// 							},
-	// 							SourcePortRange: &vpp_acl.AccessLists_Acl_Rule_Matches_IpRule_Tcp_SourcePortRange{
-	// 								LowerPort: uint32(vppRule.DstPort),
-	// 								UpperPort: uint32(vppRule.DstPort),
-	// 							},
-	// 						},
-	// 					},
-	// 				},
-	// 			},
-	// 		},
-	// 	}
-	// } else if vppRule.IpProtocol == 17 {
-	// 	aclcfg.acl = &vpp_acl.AccessLists_Acl{
-	// 		Rules: []*vpp_acl.AccessLists_Acl_Rule{
-	// 			{
-	// 				Matches: &vpp_acl.AccessLists_Acl_Rule_Matches{
-	// 					IpRule: &vpp_acl.AccessLists_Acl_Rule_Matches_IpRule{
-	// 						Ip: &vpp_acl.AccessLists_Acl_Rule_Matches_IpRule_Ip{
-	// 							DestinationNetwork: vppRule.DstIpAddr,
-	// 							SourceNetwork:      vppRule.SrcIpAddr,
-	// 						},
-	// 						Udp: &vpp_acl.AccessLists_Acl_Rule_Matches_IpRule_Udp{
-	// 							DestinationPortRange: &vpp_acl.AccessLists_Acl_Rule_Matches_IpRule_Udp_DestinationPortRange{
-	// 								LowerPort: uint32(vppRule.DstPort),
-	// 								UpperPort: uint32(vppRule.DstPort),
-	// 							},
-	// 							SourcePortRange: &vpp_acl.AccessLists_Acl_Rule_Matches_IpRule_Udp_SourcePortRange{
-	// 								LowerPort: uint32(vppRule.DstPort),
-	// 								UpperPort: uint32(vppRule.DstPort),
-	// 							},
-	// 						},
-	// 					},
-	// 				},
-	// 			},
-	// 		},
-	// 	}
-	// } else {
-	// 	aclcfg.acl = &vpp_acl.AccessLists_Acl{
-	// 		Rules: []*vpp_acl.AccessLists_Acl_Rule{
-	// 			{
-	// 				Matches: &vpp_acl.AccessLists_Acl_Rule_Matches{
-	// 					IpRule: &vpp_acl.AccessLists_Acl_Rule_Matches_IpRule{
-	// 						Ip: &vpp_acl.AccessLists_Acl_Rule_Matches_IpRule_Ip{
-	// 							DestinationNetwork: vppRule.DstIpAddr,
-	// 							SourceNetwork:      vppRule.SrcIpAddr,
-	// 						},
-	// 					},
-	// 				},
-	// 			},
-	// 		},
-	// 	}
-	// }
-=======
 	} else {
 		matches = &vpp_acl.AccessLists_Acl_Rule_Matches{
 			IpRule: &vpp_acl.AccessLists_Acl_Rule_Matches_IpRule{
@@ -799,7 +697,6 @@ func (d *VppDriver) AddPolicyRule(id string) error {
 			},
 		},
 	}
->>>>>>> upstream/govpp-pantheon-dev2
 
 	log.Infof("ACL config: %v", aclcfg)
 
@@ -815,13 +712,7 @@ func (d *VppDriver) AddPolicyRule(id string) error {
 	}
 
 	// Store the network configuration
-<<<<<<< HEAD
-	d.oper.localACLConfigMutex.Lock()
 	d.oper.LocalACLConfig[id] = aclcfg
-	d.oper.localACLConfigMutex.Unlock()
-=======
-	d.oper.LocalACLConfig[id] = aclcfg
->>>>>>> upstream/govpp-pantheon-dev2
 	return nil
 }
 
