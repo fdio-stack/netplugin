@@ -634,79 +634,98 @@ func (d *VppDriver) AddPolicyRule(id string) error {
 
 	vppRule := &ruleCfg.OfnetPolicyRule
 	aclcfg := ACLConfig{}
-	aclcfg.acl = &vpp_acl.AccessLists_Acl{
-		Rules: []*vpp_acl.AccessLists_Acl_Rule{},
-	}
+
 	// Action rule to be VPP specific
 	if vppRule.Action == "allow" {
-		aclcfg.acl.Rules = append(aclcfg.acl.Rules, &vpp_acl.AccessLists_Acl_Rule{
-			Actions: &vpp_acl.AccessLists_Acl_Rule_Actions{
-				AclAction: vpp_acl.AclAction_PERMIT,
+		aclcfg.acl = &vpp_acl.AccessLists_Acl{
+			Rules: []*vpp_acl.AccessLists_Acl_Rule{
+				{
+					Actions: &vpp_acl.AccessLists_Acl_Rule_Actions{
+						AclAction: vpp_acl.AclAction_PERMIT,
+					},
+				},
 			},
-		})
+		}
 	} else if vppRule.Action == "deny" {
-		aclcfg.acl.Rules = append(aclcfg.acl.Rules, &vpp_acl.AccessLists_Acl_Rule{
-			Actions: &vpp_acl.AccessLists_Acl_Rule_Actions{
-				AclAction: vpp_acl.AclAction_DENY,
+		aclcfg.acl = &vpp_acl.AccessLists_Acl{
+			Rules: []*vpp_acl.AccessLists_Acl_Rule{
+				{
+					Actions: &vpp_acl.AccessLists_Acl_Rule_Actions{
+						AclAction: vpp_acl.AclAction_DENY,
+					},
+				},
 			},
-		})
+		}
 	}
 
-	// Src/DstNetwork choice based on protocol
-	if vppRule.IpProtocol == 6 {
-		aclcfg.acl.Rules = append(aclcfg.acl.Rules, &vpp_acl.AccessLists_Acl_Rule{
-			Matches: &vpp_acl.AccessLists_Acl_Rule_Matches{
-				IpRule: &vpp_acl.AccessLists_Acl_Rule_Matches_IpRule{
-					Ip: &vpp_acl.AccessLists_Acl_Rule_Matches_IpRule_Ip{
-						DestinationNetwork: vppRule.DstIpAddr,
-						SourceNetwork:      vppRule.SrcIpAddr,
-					},
-					Tcp: &vpp_acl.AccessLists_Acl_Rule_Matches_IpRule_Tcp{
-						DestinationPortRange: &vpp_acl.AccessLists_Acl_Rule_Matches_IpRule_Tcp_DestinationPortRange{
-							LowerPort: uint32(vppRule.DstPort),
-							UpperPort: uint32(vppRule.DstPort),
-						},
-						SourcePortRange: &vpp_acl.AccessLists_Acl_Rule_Matches_IpRule_Tcp_SourcePortRange{
-							LowerPort: uint32(vppRule.DstPort),
-							UpperPort: uint32(vppRule.DstPort),
-						},
-					},
-				},
-			},
-		})
-	} else if vppRule.IpProtocol == 17 {
-		aclcfg.acl.Rules = append(aclcfg.acl.Rules, &vpp_acl.AccessLists_Acl_Rule{
-			Matches: &vpp_acl.AccessLists_Acl_Rule_Matches{
-				IpRule: &vpp_acl.AccessLists_Acl_Rule_Matches_IpRule{
-					Ip: &vpp_acl.AccessLists_Acl_Rule_Matches_IpRule_Ip{
-						DestinationNetwork: vppRule.DstIpAddr,
-						SourceNetwork:      vppRule.SrcIpAddr,
-					},
-					Udp: &vpp_acl.AccessLists_Acl_Rule_Matches_IpRule_Udp{
-						DestinationPortRange: &vpp_acl.AccessLists_Acl_Rule_Matches_IpRule_Udp_DestinationPortRange{
-							LowerPort: uint32(vppRule.DstPort),
-							UpperPort: uint32(vppRule.DstPort),
-						},
-						SourcePortRange: &vpp_acl.AccessLists_Acl_Rule_Matches_IpRule_Udp_SourcePortRange{
-							LowerPort: uint32(vppRule.DstPort),
-							UpperPort: uint32(vppRule.DstPort),
-						},
-					},
-				},
-			},
-		})
-	} else {
-		aclcfg.acl.Rules = append(aclcfg.acl.Rules, &vpp_acl.AccessLists_Acl_Rule{
-			Matches: &vpp_acl.AccessLists_Acl_Rule_Matches{
-				IpRule: &vpp_acl.AccessLists_Acl_Rule_Matches_IpRule{
-					Ip: &vpp_acl.AccessLists_Acl_Rule_Matches_IpRule_Ip{
-						DestinationNetwork: vppRule.DstIpAddr,
-						SourceNetwork:      vppRule.SrcIpAddr,
-					},
-				},
-			},
-		})
-	}
+	// // Src/DstNetwork choice based on protocol
+	// if vppRule.IpProtocol == 6 {
+	// 	aclcfg.acl = &vpp_acl.AccessLists_Acl{
+	// 		Rules: []*vpp_acl.AccessLists_Acl_Rule{
+	// 			{
+	// 				Matches: &vpp_acl.AccessLists_Acl_Rule_Matches{
+	// 					IpRule: &vpp_acl.AccessLists_Acl_Rule_Matches_IpRule{
+	// 						Ip: &vpp_acl.AccessLists_Acl_Rule_Matches_IpRule_Ip{
+	// 							DestinationNetwork: vppRule.DstIpAddr,
+	// 							SourceNetwork:      vppRule.SrcIpAddr,
+	// 						},
+	// 						Tcp: &vpp_acl.AccessLists_Acl_Rule_Matches_IpRule_Tcp{
+	// 							DestinationPortRange: &vpp_acl.AccessLists_Acl_Rule_Matches_IpRule_Tcp_DestinationPortRange{
+	// 								LowerPort: uint32(vppRule.DstPort),
+	// 								UpperPort: uint32(vppRule.DstPort),
+	// 							},
+	// 							SourcePortRange: &vpp_acl.AccessLists_Acl_Rule_Matches_IpRule_Tcp_SourcePortRange{
+	// 								LowerPort: uint32(vppRule.DstPort),
+	// 								UpperPort: uint32(vppRule.DstPort),
+	// 							},
+	// 						},
+	// 					},
+	// 				},
+	// 			},
+	// 		},
+	// 	}
+	// } else if vppRule.IpProtocol == 17 {
+	// 	aclcfg.acl = &vpp_acl.AccessLists_Acl{
+	// 		Rules: []*vpp_acl.AccessLists_Acl_Rule{
+	// 			{
+	// 				Matches: &vpp_acl.AccessLists_Acl_Rule_Matches{
+	// 					IpRule: &vpp_acl.AccessLists_Acl_Rule_Matches_IpRule{
+	// 						Ip: &vpp_acl.AccessLists_Acl_Rule_Matches_IpRule_Ip{
+	// 							DestinationNetwork: vppRule.DstIpAddr,
+	// 							SourceNetwork:      vppRule.SrcIpAddr,
+	// 						},
+	// 						Udp: &vpp_acl.AccessLists_Acl_Rule_Matches_IpRule_Udp{
+	// 							DestinationPortRange: &vpp_acl.AccessLists_Acl_Rule_Matches_IpRule_Udp_DestinationPortRange{
+	// 								LowerPort: uint32(vppRule.DstPort),
+	// 								UpperPort: uint32(vppRule.DstPort),
+	// 							},
+	// 							SourcePortRange: &vpp_acl.AccessLists_Acl_Rule_Matches_IpRule_Udp_SourcePortRange{
+	// 								LowerPort: uint32(vppRule.DstPort),
+	// 								UpperPort: uint32(vppRule.DstPort),
+	// 							},
+	// 						},
+	// 					},
+	// 				},
+	// 			},
+	// 		},
+	// 	}
+	// } else {
+	// 	aclcfg.acl = &vpp_acl.AccessLists_Acl{
+	// 		Rules: []*vpp_acl.AccessLists_Acl_Rule{
+	// 			{
+	// 				Matches: &vpp_acl.AccessLists_Acl_Rule_Matches{
+	// 					IpRule: &vpp_acl.AccessLists_Acl_Rule_Matches_IpRule{
+	// 						Ip: &vpp_acl.AccessLists_Acl_Rule_Matches_IpRule_Ip{
+	// 							DestinationNetwork: vppRule.DstIpAddr,
+	// 							SourceNetwork:      vppRule.SrcIpAddr,
+	// 						},
+	// 					},
+	// 				},
+	// 			},
+	// 		},
+	// 	}
+	// }
+
 	log.Infof("ACL config: %v", aclcfg)
 
 	err = localclient.DataChangeRequest(vppDriverID).
