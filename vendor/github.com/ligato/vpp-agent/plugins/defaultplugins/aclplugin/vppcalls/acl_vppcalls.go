@@ -242,8 +242,26 @@ func ipACL(ipRule *acl.AccessLists_Acl_Rule_Matches_IpRule_Ip, aclRule *acl_api.
 		aclRule.SrcIPAddr = sourceNetwork.To16()
 		aclRule.DstIPAddr = destinationNetwork.To16()
 	} else {
-		return aclRule, fmt.Errorf("Source address %v and destionation address %v have different IP version or missing",
-			ipRule.SourceNetwork, ipRule.DestinationNetwork)
+		if ipRule.SourceNetwork == "" || ipRule.DestinationNetwork == "" {
+			if sourceNetwork.To4() != nil {
+				aclRule.IsIpv6 = 0
+				aclRule.SrcIPAddr = sourceNetwork.To4()
+			} else if sourceNetwork.To16() != nil  {
+				aclRule.IsIpv6 = 1
+				aclRule.SrcIPAddr = sourceNetwork.To16()
+			} else if destinationNetwork.To4() != nil {
+				aclRule.IsIpv6 = 0
+				aclRule.DstIPAddr = destinationNetwork.To4()
+			} else if destinationNetwork.To16() != nil {
+				aclRule.IsIpv6 = 1
+				aclRule.DstIPAddr = destinationNetwork.To16()
+			} else {
+				aclRule.IsIpv6 = 0
+			}
+		} else {
+			return aclRule, fmt.Errorf("Source address %v and destionation address %v have different IP version or missing",
+				ipRule.SourceNetwork, ipRule.DestinationNetwork)
+		}
 	}
 	return aclRule, nil
 }

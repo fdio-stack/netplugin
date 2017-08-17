@@ -36,10 +36,13 @@ import (
 	vpp_if "github.com/ligato/vpp-agent/plugins/defaultplugins/ifplugin/model/interfaces"
 	vpp_l2 "github.com/ligato/vpp-agent/plugins/defaultplugins/l2plugin/model/l2"
 	linux_if "github.com/ligato/vpp-agent/plugins/linuxplugin/model/interfaces"
-
-	// TODO: move all communication with docker to the agent (i.e. create containerId-based namespace)
-	dockerclient "github.com/docker/docker/client"
 )
+
+// NetworkConfig stores configuration for a given network.
+type NetworkConfig struct {
+	bd     *vpp_l2.BridgeDomains_BridgeDomain // Bridge domain
+	vxlans []*vpp_if.Interfaces_Interface     // List of all VXLAN tunnels
+}
 
 // EndpointConfig stores configuration for a given endpoint.
 type EndpointConfig struct {
@@ -48,11 +51,9 @@ type EndpointConfig struct {
 	afpacket *vpp_if.Interfaces_Interface        // AFPacket interface
 }
 
-// NetworkConfig stores configuration for a given network.
-type NetworkConfig struct {
-	bd        *vpp_l2.BridgeDomains_BridgeDomain // Bridge domain
-	vxlans    []*vpp_if.Interfaces_Interface     // List of all VXLAN tunnels
-	endpoints map[string]EndpointConfig          // Endpoint ID -> Endpoint Config
+// ACLConfig stores ACL configuration for a given network.
+type ACLConfig struct {
+	acl *vpp_acl.AccessLists_Acl // ACL
 }
 
 // ACLConfig stores ACL configuration for a given network.
@@ -65,9 +66,16 @@ type VppDriverOperState struct {
 	core.CommonState
 
 	// Cached currently applied configuration of networks and endpoints.
+	// Acquire locks in the order as they are listed here to prevent from a potential deadlock!
 	LocalNetConfig      map[string]NetworkConfig // Network ID -> Network config
 	localNetConfigMutex sync.Mutex
+<<<<<<< HEAD
 	LocalACLConfig      map[string]ACLConfig // Network ID -> ACL config
+=======
+	LocalEpConfig       map[string]EndpointConfig // Endpoint ID -> Endpoint config
+	localEpConfigMutex  sync.Mutex
+	LocalACLConfig      map[string]ACLConfig // ACL ID -> ACL config
+>>>>>>> upstream/govpp-pantheon-dev2
 	localACLConfigMutex sync.Mutex
 }
 
@@ -103,9 +111,6 @@ type VppDriver struct {
 	clusterIPS []string // Local cluster IP address
 
 	vppAgent *agent_core.Agent // VPP agent
-
-	// TODO: remove once agent supports containerId-based namespaces
-	dockerClient *dockerclient.Client
 }
 
 // Init initializes the VPP driver with VPP agent.
@@ -131,6 +136,8 @@ func (d *VppDriver) Init(info *core.InstanceInfo) error {
 		d.oper.ID = info.HostLabel
 
 		d.oper.LocalNetConfig = make(map[string]NetworkConfig)
+		d.oper.LocalEpConfig = make(map[string]EndpointConfig)
+		d.oper.LocalACLConfig = make(map[string]ACLConfig)
 
 		// write the oper
 		err = d.oper.Write()
@@ -139,9 +146,27 @@ func (d *VppDriver) Init(info *core.InstanceInfo) error {
 		}
 	}
 
-	// make sure LocalNetConfig exists
+	rewriteOper := false
+
+	// make sure LocalNetConfig exist
 	if d.oper.LocalNetConfig == nil {
 		d.oper.LocalNetConfig = make(map[string]NetworkConfig)
+		rewriteOper = true
+	}
+
+	// make sure LocalEpConfig exist
+	if d.oper.LocalEpConfig == nil {
+		d.oper.LocalEpConfig = make(map[string]EndpointConfig)
+		rewriteOper = true
+	}
+
+	// make sure LocalACLConfig exist
+	if d.oper.LocalACLConfig == nil {
+		d.oper.LocalACLConfig = make(map[string]ACLConfig)
+		rewriteOper = true
+	}
+
+	if rewriteOper {
 		// write the oper
 		err = d.oper.Write()
 		if err != nil {
@@ -150,12 +175,6 @@ func (d *VppDriver) Init(info *core.InstanceInfo) error {
 	}
 
 	log.Infof("Initializing vppdriver")
-
-	d.dockerClient, err = dockerclient.NewClient("unix:///var/run/docker.sock", "", nil, nil)
-	if err != nil {
-		log.Fatalf("Unable to connect to docker. Error %v", err)
-		return err
-	}
 
 	flavour := linuxlocal.Flavour{}
 	d.vppAgent = agent_core.NewAgent(log.StandardLogger(), 15*time.Second, flavour.Plugins()...)
@@ -177,11 +196,6 @@ func (d *VppDriver) Deinit() {
 	if err != nil {
 		log.Warnf("Error stopping VPP agent, Err: '%v'", err)
 	}
-
-	err = d.dockerClient.Close()
-	if err != nil {
-		log.Warnf("Error closing docker client, Err: '%v'", err)
-	}
 }
 
 // CreateNetwork creates a bridge domain network for a given ID in VPP
@@ -192,15 +206,6 @@ func (d *VppDriver) CreateNetwork(id string) error {
 	err := cfgNw.Read(id)
 	if err != nil {
 		log.Errorf("Failed to read network id='%s'", id)
-		return err
-	}
-
-	d.oper.localNetConfigMutex.Lock()
-	_, exists := d.oper.LocalNetConfig[id]
-	d.oper.localNetConfigMutex.Unlock()
-	if exists {
-		err = fmt.Errorf("Network id='%s' is already configured", id)
-		log.Error(err.Error())
 		return err
 	}
 
@@ -222,31 +227,35 @@ func (d *VppDriver) CreateNetwork(id string) error {
 	// Create VXLAN tunnels between all the nodes of the cluster
 	netcfg.vxlans = []*vpp_if.Interfaces_Interface{}
 	for i, nodeIP := range d.clusterIPS {
-		if nodeIP != d.localIP {
-			vxlanName := fmt.Sprintf("vxlan-%s-%d", id, i)
-			netcfg.vxlans = append(netcfg.vxlans,
-				&vpp_if.Interfaces_Interface{
-					Name:    vxlanName,
-					Type:    vpp_if.InterfaceType_VXLAN_TUNNEL,
-					Enabled: true,
-					Vxlan: &vpp_if.Interfaces_Interface_Vxlan{
-						SrcAddress: d.localIP,
-						DstAddress: nodeIP,
-					},
-				})
-			netcfg.bd.Interfaces = append(netcfg.bd.Interfaces,
-				&vpp_l2.BridgeDomains_BridgeDomain_Interfaces{
-					Name: vxlanName,
-					BridgedVirtualInterface: false,
-					SplitHorizonGroup:       1,
-				})
-		}
+		vxlanName := fmt.Sprintf("vxlan-%s-%d", id, i)
+		netcfg.vxlans = append(netcfg.vxlans,
+			&vpp_if.Interfaces_Interface{
+				Name:    vxlanName,
+				Type:    vpp_if.InterfaceType_VXLAN_TUNNEL,
+				Enabled: true,
+				Vxlan: &vpp_if.Interfaces_Interface_Vxlan{
+					SrcAddress: d.localIP,
+					DstAddress: nodeIP,
+				},
+			})
+		netcfg.bd.Interfaces = append(netcfg.bd.Interfaces,
+			&vpp_l2.BridgeDomains_BridgeDomain_Interfaces{
+				Name: vxlanName,
+				BridgedVirtualInterface: false,
+				SplitHorizonGroup:       1,
+			})
 	}
 
-	// Prepare map for the endpoints
-	netcfg.endpoints = make(map[string]EndpointConfig)
-
 	log.Infof("Network config: %v", netcfg)
+
+	d.oper.localNetConfigMutex.Lock()
+	defer d.oper.localNetConfigMutex.Unlock()
+	_, exists := d.oper.LocalNetConfig[id]
+	if exists {
+		err = fmt.Errorf("Network id='%s' is already configured", id)
+		log.Error(err.Error())
+		return err
+	}
 
 	// Apply all changes
 	putReq := localclient.DataChangeRequest(vppDriverID).Put()
@@ -261,10 +270,7 @@ func (d *VppDriver) CreateNetwork(id string) error {
 	}
 
 	// Store the network configuration
-	d.oper.localNetConfigMutex.Lock()
 	d.oper.LocalNetConfig[id] = netcfg
-	d.oper.localNetConfigMutex.Unlock()
-
 	return nil
 }
 
@@ -287,8 +293,6 @@ func (d *VppDriver) DeleteNetwork(id, subnet, nwType, encap string, pktTag, extP
 	}
 	deleteReq.BD(netcfg.bd.Name)
 
-	// TODO: should we also remove all attached endpoints?
-
 	err := deleteReq.Send().ReceiveReply()
 	if err != nil {
 		log.Errorf("Failed to delete network id='%s', Err: %v", id, err)
@@ -310,14 +314,6 @@ func (d *VppDriver) CreateEndpoint(id string) error {
 		log.Errorf("Unable to get EpState for id: %s. Err: %v", id, err)
 		return err
 	}
-
-	/*
-		cinfo, err := d.dockerClient.ContainerInspect(context.Background(), cfgEp.ContainerID)
-		if err != nil {
-			log.Fatalf("Error getting container info for endpoint id: %s. Err: %v", id, err)
-			return err
-		}
-	*/
 
 	vppVethName := cfgEp.EndpointID[:9]
 	epVethName := "veth-" + vppVethName
@@ -342,12 +338,6 @@ func (d *VppDriver) CreateEndpoint(id string) error {
 		},
 		IpAddresses: []string{cfgEp.IPAddress},
 		PhysAddress: cfgEp.MacAddress,
-		// TODO: this should be something like Namespace_CONTAINER_REF_NS
-		/*		Namespace: &linux_if.LinuxInterfaces_Interface_Namespace{
-					Type: linux_if.LinuxInterfaces_Interface_Namespace_PID_REF_NS,
-					Pid:  uint32(cinfo.State.Pid),
-				},
-		*/
 	}
 
 	epcfg.afpacket = &vpp_if.Interfaces_Interface{
@@ -362,22 +352,15 @@ func (d *VppDriver) CreateEndpoint(id string) error {
 	log.Infof("Endpoint config: %v", epcfg)
 
 	d.oper.localNetConfigMutex.Lock()
+	defer d.oper.localNetConfigMutex.Unlock()
 	netcfg, netExists := d.oper.LocalNetConfig[cfgEp.NetID]
 	if !netExists {
-		d.oper.localNetConfigMutex.Unlock()
 		err := fmt.Errorf("Network id='%s' is not configured", id)
 		log.Error(err.Error())
 		return err
 	}
 
-	_, epExists := netcfg.endpoints[cfgEp.ID]
-	if epExists {
-		d.oper.localNetConfigMutex.Unlock()
-		err := fmt.Errorf("Endpoint id='%s' is already configured", id)
-		log.Error(err.Error())
-		return err
-	}
-
+	origBfIfs := netcfg.bd.Interfaces
 	netcfg.bd.Interfaces = append(netcfg.bd.Interfaces,
 		&vpp_l2.BridgeDomains_BridgeDomain_Interfaces{
 			Name: afPacketName,
@@ -393,14 +376,14 @@ func (d *VppDriver) CreateEndpoint(id string) error {
 		Send().
 		ReceiveReply()
 	if err != nil {
-		d.oper.localNetConfigMutex.Unlock()
+		netcfg.bd.Interfaces = origBfIfs
 		log.Errorf("Failed to create endpoint id='%s', Err: %v", id, err)
 		return err
 	}
-
 	// Store the endpoint configuration
-	netcfg.endpoints[id] = epcfg
-	d.oper.localNetConfigMutex.Unlock()
+	d.oper.localEpConfigMutex.Lock()
+	defer d.oper.localEpConfigMutex.Unlock()
+	d.oper.LocalEpConfig[id] = epcfg
 
 	// Save the oper state
 	operEp := &drivers.OperEndpointState{
@@ -447,24 +430,18 @@ func (d *VppDriver) DeleteEndpoint(id string) error {
 		epOper.Clear()
 	}()
 
-	cfgEp := &mastercfg.CfgEndpointState{}
-	cfgEp.StateDriver = d.oper.StateDriver
-	err = cfgEp.Read(id)
-	if err != nil {
-		log.Errorf("Unable to get EpState for id: %s. Err: %v", id, err)
-		return err
-	}
-
 	d.oper.localNetConfigMutex.Lock()
 	defer d.oper.localNetConfigMutex.Unlock()
-	netcfg, netExists := d.oper.LocalNetConfig[cfgEp.NetID]
+	netcfg, netExists := d.oper.LocalNetConfig[epOper.NetID]
 	if !netExists {
 		err := fmt.Errorf("Network id='%s' is not configured", id)
 		log.Error(err.Error())
 		return err
 	}
 
-	epcfg, epExists := netcfg.endpoints[cfgEp.ID]
+	d.oper.localEpConfigMutex.Lock()
+	defer d.oper.localEpConfigMutex.Unlock()
+	epcfg, epExists := d.oper.LocalEpConfig[id]
 	if !epExists {
 		err := fmt.Errorf("Endpoint id='%s' is not configured", id)
 		log.Error(err.Error())
@@ -495,7 +472,7 @@ func (d *VppDriver) DeleteEndpoint(id string) error {
 		return err
 	}
 
-	delete(netcfg.endpoints, id)
+	delete(d.oper.LocalEpConfig, id)
 	return nil
 }
 
@@ -523,7 +500,7 @@ func (d *VppDriver) DeleteHostAccPort(id string) (err error) {
 	return nil
 }
 
-// AddPeerHost is not implemented.
+// AddPeerHost adds VTEPs if necessary
 func (d *VppDriver) AddPeerHost(node core.ServiceInfo) error {
 	// Nothing to do if this is our own IP
 	if node.HostAddr == d.localIP {
@@ -534,12 +511,28 @@ func (d *VppDriver) AddPeerHost(node core.ServiceInfo) error {
 
 	// Add the VTEP to the clusterIPS
 	d.clusterIPS = append(d.clusterIPS, node.HostAddr)
+
+	// TODO: add VXLAN interfaces for this peer ?
 	return nil
 }
 
-// DeletePeerHost is not implemented.
+// DeletePeerHost deletes associated VTEP
 func (d *VppDriver) DeletePeerHost(node core.ServiceInfo) error {
-	log.Infof("Not implemented")
+	// Nothing to do if this is our own IP
+	if node.HostAddr == d.localIP {
+		return nil
+	}
+
+	log.Infof("DeletePeerHost for %+v", node)
+	clusterIPS := []string{}
+	for _, clusterIP := range d.clusterIPS {
+		if clusterIP != node.HostAddr {
+			clusterIPS = append(clusterIPS, clusterIP)
+		}
+	}
+	d.clusterIPS = clusterIPS
+
+	// TODO: remove VXLAN interfaces for this peer ?
 	return nil
 }
 
@@ -624,16 +617,24 @@ func (d *VppDriver) AddPolicyRule(id string) error {
 	}
 
 	d.oper.localACLConfigMutex.Lock()
+<<<<<<< HEAD
 	_, exists := d.oper.LocalACLConfig[id]
 	d.oper.localACLConfigMutex.Unlock()
 	if exists {
 		err = fmt.Errorf("Network id='%s' is already configured", id)
+=======
+	defer d.oper.localACLConfigMutex.Unlock()
+	_, exists := d.oper.LocalACLConfig[id]
+	if exists {
+		err = fmt.Errorf("ACL id='%s' is already configured", id)
+>>>>>>> upstream/govpp-pantheon-dev2
 		log.Error(err.Error())
 		return err
 	}
 
 	vppRule := &ruleCfg.OfnetPolicyRule
 	aclcfg := ACLConfig{}
+<<<<<<< HEAD
 
 	// Action rule to be VPP specific
 	if vppRule.Action == "allow" {
@@ -642,20 +643,71 @@ func (d *VppDriver) AddPolicyRule(id string) error {
 				{
 					Actions: &vpp_acl.AccessLists_Acl_Rule_Actions{
 						AclAction: vpp_acl.AclAction_PERMIT,
+=======
+	var action *vpp_acl.AccessLists_Acl_Rule_Actions
+	var matches *vpp_acl.AccessLists_Acl_Rule_Matches
+
+	// Action rule to be VPP specific
+	if vppRule.Action == "allow" {
+		action = &vpp_acl.AccessLists_Acl_Rule_Actions{
+			AclAction: vpp_acl.AclAction_PERMIT,
+		}
+	} else if vppRule.Action == "deny" {
+		action = &vpp_acl.AccessLists_Acl_Rule_Actions{
+			AclAction: vpp_acl.AclAction_PERMIT,
+		}
+	}
+
+	// Src/DstNetwork choice based on protocol
+	if vppRule.IpProtocol == 6 {
+		matches = &vpp_acl.AccessLists_Acl_Rule_Matches{
+			IpRule: &vpp_acl.AccessLists_Acl_Rule_Matches_IpRule{
+				Ip: &vpp_acl.AccessLists_Acl_Rule_Matches_IpRule_Ip{
+					DestinationNetwork: vppRule.DstIpAddr,
+					SourceNetwork:      vppRule.SrcIpAddr,
+				},
+				Tcp: &vpp_acl.AccessLists_Acl_Rule_Matches_IpRule_Tcp{
+					DestinationPortRange: &vpp_acl.AccessLists_Acl_Rule_Matches_IpRule_Tcp_DestinationPortRange{
+						LowerPort: uint32(vppRule.DstPort),
+						UpperPort: uint32(vppRule.DstPort),
+					},
+					SourcePortRange: &vpp_acl.AccessLists_Acl_Rule_Matches_IpRule_Tcp_SourcePortRange{
+						LowerPort: uint32(vppRule.SrcPort),
+						UpperPort: uint32(vppRule.SrcPort),
+>>>>>>> upstream/govpp-pantheon-dev2
 					},
 				},
 			},
 		}
+<<<<<<< HEAD
 	} else if vppRule.Action == "deny" {
 		aclcfg.acl = &vpp_acl.AccessLists_Acl{
 			Rules: []*vpp_acl.AccessLists_Acl_Rule{
 				{
 					Actions: &vpp_acl.AccessLists_Acl_Rule_Actions{
 						AclAction: vpp_acl.AclAction_DENY,
+=======
+	} else if vppRule.IpProtocol == 17 {
+		matches = &vpp_acl.AccessLists_Acl_Rule_Matches{
+			IpRule: &vpp_acl.AccessLists_Acl_Rule_Matches_IpRule{
+				Ip: &vpp_acl.AccessLists_Acl_Rule_Matches_IpRule_Ip{
+					DestinationNetwork: vppRule.DstIpAddr,
+					SourceNetwork:      vppRule.SrcIpAddr,
+				},
+				Udp: &vpp_acl.AccessLists_Acl_Rule_Matches_IpRule_Udp{
+					DestinationPortRange: &vpp_acl.AccessLists_Acl_Rule_Matches_IpRule_Udp_DestinationPortRange{
+						LowerPort: uint32(vppRule.DstPort),
+						UpperPort: uint32(vppRule.DstPort),
+					},
+					SourcePortRange: &vpp_acl.AccessLists_Acl_Rule_Matches_IpRule_Udp_SourcePortRange{
+						LowerPort: uint32(vppRule.SrcPort),
+						UpperPort: uint32(vppRule.SrcPort),
+>>>>>>> upstream/govpp-pantheon-dev2
 					},
 				},
 			},
 		}
+<<<<<<< HEAD
 	}
 
 	// // Src/DstNetwork choice based on protocol
@@ -725,6 +777,29 @@ func (d *VppDriver) AddPolicyRule(id string) error {
 	// 		},
 	// 	}
 	// }
+=======
+	} else {
+		matches = &vpp_acl.AccessLists_Acl_Rule_Matches{
+			IpRule: &vpp_acl.AccessLists_Acl_Rule_Matches_IpRule{
+				Ip: &vpp_acl.AccessLists_Acl_Rule_Matches_IpRule_Ip{
+					DestinationNetwork: vppRule.DstIpAddr,
+					SourceNetwork:      vppRule.SrcIpAddr,
+				},
+			},
+		}
+	}
+
+	aclcfg.acl = &vpp_acl.AccessLists_Acl{
+		AclName: "acl-" + id,
+		Rules: []*vpp_acl.AccessLists_Acl_Rule{
+			{
+				RuleName: vppRule.RuleId,
+				Actions:  action,
+				Matches:  matches,
+			},
+		},
+	}
+>>>>>>> upstream/govpp-pantheon-dev2
 
 	log.Infof("ACL config: %v", aclcfg)
 
@@ -740,9 +815,13 @@ func (d *VppDriver) AddPolicyRule(id string) error {
 	}
 
 	// Store the network configuration
+<<<<<<< HEAD
 	d.oper.localACLConfigMutex.Lock()
 	d.oper.LocalACLConfig[id] = aclcfg
 	d.oper.localACLConfigMutex.Unlock()
+=======
+	d.oper.LocalACLConfig[id] = aclcfg
+>>>>>>> upstream/govpp-pantheon-dev2
 	return nil
 }
 

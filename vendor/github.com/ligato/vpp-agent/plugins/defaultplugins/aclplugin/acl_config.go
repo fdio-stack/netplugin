@@ -74,6 +74,7 @@ func (plugin *ACLConfigurator) ConfigureACL(acl *acl.AccessLists_Acl) error {
 		var err error
 		if isL2MacIP {
 			vppACLIndex, err = vppcalls.AddMacIPAcl(rules, acl.AclName, plugin.vppChannel)
+			log.Infof("AddMacIPAcl err: %v", err)
 			if err != nil {
 				return err
 			}
@@ -83,6 +84,7 @@ func (plugin *ACLConfigurator) ConfigureACL(acl *acl.AccessLists_Acl) error {
 			log.Debugf("ACL %v registered with index %v", acl.AclName, agentACLIndex)
 		} else {
 			vppACLIndex, err = vppcalls.AddIPAcl(rules, acl.AclName, plugin.vppChannel)
+			log.Infof("AddIPAcl err: %v", err)
 			if err != nil {
 				return err
 			}
