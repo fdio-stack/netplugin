@@ -58,11 +58,6 @@ type ACLConfig struct {
 	acl *vpp_acl.AccessLists_Acl // ACL
 }
 
-// ACLConfig stores ACL configuration for a given network.
-type ACLConfig struct {
-	acl *vpp_acl.AccessLists_Acl // ACL
-}
-
 // VppDriverOperState carries operational state of the VppDriver.
 type VppDriverOperState struct {
 	core.CommonState
@@ -693,7 +688,7 @@ func addEndpointACL(rule []*ofnet.OfnetPolicyRule, epGroupID int, afPacketName s
 	var matches *vpp_acl.AccessLists_Acl_Rule_Matches
 	var interfaces *vpp_acl.AccessLists_Acl_Interfaces
 
-	for _, vppRule := range rule {
+	for id, vppRule := range rule {
 		ruleID := vppRule.RuleId
 		epPolicyIf := []string{afPacketName}
 
@@ -769,10 +764,10 @@ func addEndpointACL(rule []*ofnet.OfnetPolicyRule, epGroupID int, afPacketName s
 		}
 
 		aclcfg.acl = &vpp_acl.AccessLists_Acl{
-			AclName: "acl-" + vppRule.RuleId[0:6] + "-epg-" + strconv.Itoa(epGroupID),
+			AclName: "acl-" + vppRule.RuleId[0:7] + "-id-" + strconv.Itoa(id) + afPacketName + "-" + ruleID[len(ruleID)-2:],
 			Rules: []*vpp_acl.AccessLists_Acl_Rule{
 				{
-					RuleName: vppRule.RuleId,
+					RuleName: vppRule.RuleId + strconv.Itoa(id),
 					Actions:  action,
 					Matches:  matches,
 				},
