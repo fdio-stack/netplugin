@@ -18,18 +18,20 @@ package vppd
 import (
 	"encoding/json"
 	"fmt"
+	"hash/fnv"
 	"os"
+	"strconv"
 	"sync"
 	"time"
 
 	"github.com/contiv/netplugin/core"
 	"github.com/contiv/netplugin/drivers"
 	"github.com/contiv/netplugin/netmaster/mastercfg"
-
-	"github.com/ligato/cn-infra/logging"
-	log "github.com/ligato/cn-infra/logging/logrus"
+	"github.com/contiv/ofnet"
 
 	agent_core "github.com/ligato/cn-infra/core"
+	"github.com/ligato/cn-infra/logging"
+	log "github.com/ligato/cn-infra/logging/logrus"
 	"github.com/ligato/vpp-agent/clientv1/linux/localclient"
 	"github.com/ligato/vpp-agent/flavours/linuxlocal"
 	vpp_acl "github.com/ligato/vpp-agent/plugins/defaultplugins/aclplugin/model/acl"
@@ -71,7 +73,7 @@ type VppDriverOperState struct {
 	localNetConfigMutex sync.Mutex
 	LocalEpConfig       map[string]EndpointConfig // Endpoint ID -> Endpoint config
 	localEpConfigMutex  sync.Mutex
-	LocalACLConfig      map[string]ACLConfig // ACL ID -> ACL config
+	LocalACLConfig      map[int][]*ofnet.OfnetPolicyRule // ACL ID -> ACL config
 	localACLConfigMutex sync.Mutex
 }
 
@@ -133,7 +135,7 @@ func (d *VppDriver) Init(info *core.InstanceInfo) error {
 
 		d.oper.LocalNetConfig = make(map[string]NetworkConfig)
 		d.oper.LocalEpConfig = make(map[string]EndpointConfig)
-		d.oper.LocalACLConfig = make(map[string]ACLConfig)
+		d.oper.LocalACLConfig = make(map[int][]*ofnet.OfnetPolicyRule)
 
 		// write the oper
 		err = d.oper.Write()
@@ -158,7 +160,7 @@ func (d *VppDriver) Init(info *core.InstanceInfo) error {
 
 	// make sure LocalACLConfig exist
 	if d.oper.LocalACLConfig == nil {
-		d.oper.LocalACLConfig = make(map[string]ACLConfig)
+		d.oper.LocalACLConfig = make(map[int][]*ofnet.OfnetPolicyRule)
 		rewriteOper = true
 	}
 
@@ -222,8 +224,8 @@ func (d *VppDriver) CreateNetwork(id string) error {
 
 	// Create VXLAN tunnels between all the nodes of the cluster
 	netcfg.vxlans = []*vpp_if.Interfaces_Interface{}
-	for i, nodeIP := range d.clusterIPS {
-		vxlanName := fmt.Sprintf("vxlan-%s-%d", id, i)
+	for _, nodeIP := range d.clusterIPS {
+		vxlanName := fmt.Sprintf("vxlan-%s-%s", id, nodeIP)
 		netcfg.vxlans = append(netcfg.vxlans,
 			&vpp_if.Interfaces_Interface{
 				Name:    vxlanName,
@@ -232,6 +234,7 @@ func (d *VppDriver) CreateNetwork(id string) error {
 				Vxlan: &vpp_if.Interfaces_Interface_Vxlan{
 					SrcAddress: d.localIP,
 					DstAddress: nodeIP,
+					Vni:        genNetworkVNI(id),
 				},
 			})
 		netcfg.bd.Interfaces = append(netcfg.bd.Interfaces,
@@ -242,7 +245,7 @@ func (d *VppDriver) CreateNetwork(id string) error {
 			})
 	}
 
-	log.Infof("Network config: %v", netcfg)
+	log.Info("Network config: ", netcfg)
 
 	d.oper.localNetConfigMutex.Lock()
 	defer d.oper.localNetConfigMutex.Unlock()
@@ -345,7 +348,7 @@ func (d *VppDriver) CreateEndpoint(id string) error {
 		},
 	}
 
-	log.Infof("Endpoint config: %v", epcfg)
+	log.Info("Endpoint config: ", epcfg)
 
 	d.oper.localNetConfigMutex.Lock()
 	defer d.oper.localNetConfigMutex.Unlock()
@@ -371,11 +374,28 @@ func (d *VppDriver) CreateEndpoint(id string) error {
 		VppInterface(epcfg.afpacket).
 		Send().
 		ReceiveReply()
+
 	if err != nil {
 		netcfg.bd.Interfaces = origBfIfs
 		log.Errorf("Failed to create endpoint id='%s', Err: %v", id, err)
 		return err
 	}
+
+	// Apply policy if any at the endpoint
+	d.oper.localACLConfigMutex.Lock()
+	defer d.oper.localACLConfigMutex.Unlock()
+	rule, epPolicyCfgExists := d.oper.LocalACLConfig[cfgEp.EndpointGroupID]
+	if !epPolicyCfgExists {
+		log.Infof("No policy currently applied to the interface")
+	} else {
+		// Add policy to endpoint if exists
+		err = addEndpointACL(rule, cfgEp.EndpointGroupID, afPacketName)
+		if err != nil {
+			log.Errorf("Failed to create endpoint id='%s', Err: %v", id, err)
+			return err
+		}
+	}
+
 	// Store the endpoint configuration
 	d.oper.localEpConfigMutex.Lock()
 	defer d.oper.localEpConfigMutex.Unlock()
@@ -405,6 +425,7 @@ func (d *VppDriver) CreateEndpoint(id string) error {
 			operEp.Clear()
 		}
 	}()
+
 	return nil
 }
 
@@ -416,6 +437,8 @@ func (d *VppDriver) UpdateEndpointGroup(id string) error {
 
 // DeleteEndpoint deletes endpoint with a given ID.
 func (d *VppDriver) DeleteEndpoint(id string) error {
+	log.Infof("Delete endpoint with id: %s", id)
+
 	epOper := drivers.OperEndpointState{}
 	epOper.StateDriver = d.oper.StateDriver
 	err := epOper.Read(id)
@@ -498,6 +521,8 @@ func (d *VppDriver) DeleteHostAccPort(id string) (err error) {
 
 // AddPeerHost adds VTEPs if necessary
 func (d *VppDriver) AddPeerHost(node core.ServiceInfo) error {
+	log.Infof("Add peer host with addr: %s", node.HostAddr)
+
 	// Nothing to do if this is our own IP
 	if node.HostAddr == d.localIP {
 		return nil
@@ -514,6 +539,8 @@ func (d *VppDriver) AddPeerHost(node core.ServiceInfo) error {
 
 // DeletePeerHost deletes associated VTEP
 func (d *VppDriver) DeletePeerHost(node core.ServiceInfo) error {
+	log.Infof("Delete peer host with addr: %s", node.HostAddr)
+
 	// Nothing to do if this is our own IP
 	if node.HostAddr == d.localIP {
 		return nil
@@ -570,6 +597,7 @@ func (d *VppDriver) DelSvcSpec(svcName string, spec *core.ServiceSpec) error {
 
 // SvcProviderUpdate is not implemented.
 func (d *VppDriver) SvcProviderUpdate(svcName string, providers []string) {
+	log.Infof("Not implemented")
 }
 
 // GetEndpointStats is not implemented
@@ -602,7 +630,7 @@ func (d *VppDriver) InspectNameserver() ([]byte, error) {
 	return []byte{}, nil
 }
 
-// AddPolicyRule is not implemented
+// AddPolicyRule creates a policy rule
 func (d *VppDriver) AddPolicyRule(id string) error {
 	ruleCfg := &mastercfg.CfgPolicyRule{}
 	ruleCfg.StateDriver = d.oper.StateDriver
@@ -612,112 +640,156 @@ func (d *VppDriver) AddPolicyRule(id string) error {
 		return err
 	}
 
+	log.Infof("EPGID = %d", ruleCfg.EndpointGroupID)
+	epgID := ruleCfg.EndpointGroupID
+	vppRule := &ruleCfg.OfnetPolicyRule
+	log.Infof("Add policy rule with id='%s' and config: %+v", id, vppRule)
+
+	// save local endpoint info
 	d.oper.localACLConfigMutex.Lock()
-	defer d.oper.localACLConfigMutex.Unlock()
-	_, exists := d.oper.LocalACLConfig[id]
-	if exists {
-		err = fmt.Errorf("ACL id='%s' is already configured", id)
-		log.Error(err.Error())
+	d.oper.LocalACLConfig[epgID] = append(d.oper.LocalACLConfig[epgID], vppRule)
+	d.oper.localACLConfigMutex.Unlock()
+	err = d.oper.Write()
+	if err != nil {
 		return err
 	}
 
-	vppRule := &ruleCfg.OfnetPolicyRule
-	aclcfg := ACLConfig{}
-	var action *vpp_acl.AccessLists_Acl_Rule_Actions
-	var matches *vpp_acl.AccessLists_Acl_Rule_Matches
+	return nil
+}
 
-	// Action rule to be VPP specific
-	if vppRule.Action == "allow" {
-		action = &vpp_acl.AccessLists_Acl_Rule_Actions{
-			AclAction: vpp_acl.AclAction_PERMIT,
-		}
-	} else if vppRule.Action == "deny" {
-		action = &vpp_acl.AccessLists_Acl_Rule_Actions{
-			AclAction: vpp_acl.AclAction_PERMIT,
-		}
-	}
+// DelPolicyRule deletes a policy rule
+func (d *VppDriver) DelPolicyRule(id string) error {
+	log.Infof("Delete policy rule with id: %s", id)
 
-	// Src/DstNetwork choice based on protocol
-	if vppRule.IpProtocol == 6 {
-		matches = &vpp_acl.AccessLists_Acl_Rule_Matches{
-			IpRule: &vpp_acl.AccessLists_Acl_Rule_Matches_IpRule{
-				Ip: &vpp_acl.AccessLists_Acl_Rule_Matches_IpRule_Ip{
-					DestinationNetwork: vppRule.DstIpAddr,
-					SourceNetwork:      vppRule.SrcIpAddr,
-				},
-				Tcp: &vpp_acl.AccessLists_Acl_Rule_Matches_IpRule_Tcp{
-					DestinationPortRange: &vpp_acl.AccessLists_Acl_Rule_Matches_IpRule_Tcp_DestinationPortRange{
-						LowerPort: uint32(vppRule.DstPort),
-						UpperPort: uint32(vppRule.DstPort),
-					},
-					SourcePortRange: &vpp_acl.AccessLists_Acl_Rule_Matches_IpRule_Tcp_SourcePortRange{
-						LowerPort: uint32(vppRule.SrcPort),
-						UpperPort: uint32(vppRule.SrcPort),
-					},
-				},
-			},
-		}
-	} else if vppRule.IpProtocol == 17 {
-		matches = &vpp_acl.AccessLists_Acl_Rule_Matches{
-			IpRule: &vpp_acl.AccessLists_Acl_Rule_Matches_IpRule{
-				Ip: &vpp_acl.AccessLists_Acl_Rule_Matches_IpRule_Ip{
-					DestinationNetwork: vppRule.DstIpAddr,
-					SourceNetwork:      vppRule.SrcIpAddr,
-				},
-				Udp: &vpp_acl.AccessLists_Acl_Rule_Matches_IpRule_Udp{
-					DestinationPortRange: &vpp_acl.AccessLists_Acl_Rule_Matches_IpRule_Udp_DestinationPortRange{
-						LowerPort: uint32(vppRule.DstPort),
-						UpperPort: uint32(vppRule.DstPort),
-					},
-					SourcePortRange: &vpp_acl.AccessLists_Acl_Rule_Matches_IpRule_Udp_SourcePortRange{
-						LowerPort: uint32(vppRule.SrcPort),
-						UpperPort: uint32(vppRule.SrcPort),
-					},
-				},
-			},
-		}
-	} else {
-		matches = &vpp_acl.AccessLists_Acl_Rule_Matches{
-			IpRule: &vpp_acl.AccessLists_Acl_Rule_Matches_IpRule{
-				Ip: &vpp_acl.AccessLists_Acl_Rule_Matches_IpRule_Ip{
-					DestinationNetwork: vppRule.DstIpAddr,
-					SourceNetwork:      vppRule.SrcIpAddr,
-				},
-			},
-		}
-	}
-
-	aclcfg.acl = &vpp_acl.AccessLists_Acl{
-		AclName: "acl-" + id,
-		Rules: []*vpp_acl.AccessLists_Acl_Rule{
-			{
-				RuleName: vppRule.RuleId,
-				Actions:  action,
-				Matches:  matches,
-			},
-		},
-	}
-
-	log.Infof("ACL config: %v", aclcfg)
-
-	err = localclient.DataChangeRequest(vppDriverID).
-		Put().
-		ACL(aclcfg.acl).
+	err := localclient.DataChangeRequest(vppDriverID).
+		Delete().
+		ACL("acl-" + id).
 		Send().
 		ReceiveReply()
 
 	if err != nil {
-		log.Errorf("Failed to create network id='%s', Err: %v", id, err)
+		log.Errorf("Failed to delete policy rule id='%s', Err: %v", id, err)
 		return err
 	}
 
-	// Store the network configuration
-	d.oper.LocalACLConfig[id] = aclcfg
 	return nil
 }
 
-// DelPolicyRule is not implemented
-func (d *VppDriver) DelPolicyRule(id string) error {
-	log.Infof("Not implemented")
+// genNetworkVNI generates VNI from network ID.
+func genNetworkVNI(netID string) uint32 {
+	h := fnv.New32a()
+	h.Write([]byte(netID))
+	vni := h.Sum32()
+	vni = vni & ((1 << 24) - 1)
+	if vni == 0 {
+		vni = 1
+	}
+	return vni
+}
+
+func addEndpointACL(rule []*ofnet.OfnetPolicyRule, epGroupID int, afPacketName string) error {
+	aclcfg := ACLConfig{}
+	var action *vpp_acl.AccessLists_Acl_Rule_Actions
+	var matches *vpp_acl.AccessLists_Acl_Rule_Matches
+	var interfaces *vpp_acl.AccessLists_Acl_Interfaces
+
+	for _, vppRule := range rule {
+		ruleID := vppRule.RuleId
+		epPolicyIf := []string{afPacketName}
+
+		if ruleID[len(ruleID)-2:] == "Rx" {
+			interfaces = &vpp_acl.AccessLists_Acl_Interfaces{
+				Egress: epPolicyIf,
+			}
+		} else {
+			interfaces = &vpp_acl.AccessLists_Acl_Interfaces{
+				Ingress: epPolicyIf,
+			}
+		}
+
+		// Action rule to be VPP specific
+		if vppRule.Action == "allow" {
+			action = &vpp_acl.AccessLists_Acl_Rule_Actions{
+				AclAction: vpp_acl.AclAction_PERMIT,
+			}
+		} else if vppRule.Action == "deny" {
+			action = &vpp_acl.AccessLists_Acl_Rule_Actions{
+				AclAction: vpp_acl.AclAction_DENY,
+			}
+		}
+
+		// Src/DstNetwork choice based on protocol
+		if vppRule.IpProtocol == 6 {
+			matches = &vpp_acl.AccessLists_Acl_Rule_Matches{
+				IpRule: &vpp_acl.AccessLists_Acl_Rule_Matches_IpRule{
+					Ip: &vpp_acl.AccessLists_Acl_Rule_Matches_IpRule_Ip{
+						DestinationNetwork: vppRule.DstIpAddr,
+						SourceNetwork:      vppRule.SrcIpAddr,
+					},
+					Tcp: &vpp_acl.AccessLists_Acl_Rule_Matches_IpRule_Tcp{
+						DestinationPortRange: &vpp_acl.AccessLists_Acl_Rule_Matches_IpRule_Tcp_DestinationPortRange{
+							LowerPort: uint32(vppRule.DstPort),
+							UpperPort: uint32(vppRule.DstPort),
+						},
+						SourcePortRange: &vpp_acl.AccessLists_Acl_Rule_Matches_IpRule_Tcp_SourcePortRange{
+							LowerPort: uint32(vppRule.SrcPort),
+							UpperPort: uint32(vppRule.SrcPort),
+						},
+					},
+				},
+			}
+		} else if vppRule.IpProtocol == 17 {
+			matches = &vpp_acl.AccessLists_Acl_Rule_Matches{
+				IpRule: &vpp_acl.AccessLists_Acl_Rule_Matches_IpRule{
+					Ip: &vpp_acl.AccessLists_Acl_Rule_Matches_IpRule_Ip{
+						DestinationNetwork: vppRule.DstIpAddr,
+						SourceNetwork:      vppRule.SrcIpAddr,
+					},
+					Udp: &vpp_acl.AccessLists_Acl_Rule_Matches_IpRule_Udp{
+						DestinationPortRange: &vpp_acl.AccessLists_Acl_Rule_Matches_IpRule_Udp_DestinationPortRange{
+							LowerPort: uint32(vppRule.DstPort),
+							UpperPort: uint32(vppRule.DstPort),
+						},
+						SourcePortRange: &vpp_acl.AccessLists_Acl_Rule_Matches_IpRule_Udp_SourcePortRange{
+							LowerPort: uint32(vppRule.SrcPort),
+							UpperPort: uint32(vppRule.SrcPort),
+						},
+					},
+				},
+			}
+		} else {
+			matches = &vpp_acl.AccessLists_Acl_Rule_Matches{
+				IpRule: &vpp_acl.AccessLists_Acl_Rule_Matches_IpRule{
+					Ip: &vpp_acl.AccessLists_Acl_Rule_Matches_IpRule_Ip{
+						DestinationNetwork: vppRule.DstIpAddr,
+						SourceNetwork:      vppRule.SrcIpAddr,
+					},
+				},
+			}
+		}
+
+		aclcfg.acl = &vpp_acl.AccessLists_Acl{
+			AclName: "acl-" + vppRule.RuleId[0:6] + "-epg-" + strconv.Itoa(epGroupID),
+			Rules: []*vpp_acl.AccessLists_Acl_Rule{
+				{
+					RuleName: vppRule.RuleId,
+					Actions:  action,
+					Matches:  matches,
+				},
+			},
+			Interfaces: interfaces,
+		}
+
+		err := localclient.DataChangeRequest(vppDriverID).
+			Put().
+			ACL(aclcfg.acl).
+			Send().
+			ReceiveReply()
+
+		if err != nil {
+			log.Errorf("Failed to create policy rule id='%s', Err: %v", vppRule.RuleId, err)
+			return err
+		}
+	}
 	return nil
 }

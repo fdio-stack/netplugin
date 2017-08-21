@@ -32,6 +32,7 @@ const (
 type CfgPolicyRule struct {
 	core.CommonState
 	ofnet.OfnetPolicyRule
+	EndpointGroupID int // Endpoint group where this policy is attached to
 }
 
 // Write the state.
@@ -64,10 +65,11 @@ func (s *CfgPolicyRule) Clear() error {
 }
 
 // addPolicyRuleState adds policy rule to state store
-func addPolicyRuleState(ofnetRule *ofnet.OfnetPolicyRule) error {
+func addPolicyRuleState(ofnetRule *ofnet.OfnetPolicyRule, epgID int) error {
 	ruleCfg := &CfgPolicyRule{}
 	ruleCfg.StateDriver = stateStore
 	ruleCfg.OfnetPolicyRule = (*ofnetRule)
+	ruleCfg.EndpointGroupID = epgID
 
 	// Save the rule
 	return ruleCfg.Write()
